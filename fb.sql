@@ -1,3 +1,4 @@
+-- psql -U postgres -f fb.sql
 CREATE EXTENSION IF NOT EXISTS plpython3u;
 
 CREATE TABLE IF NOT EXISTS price (
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     formatted_date_sell_signal TEXT
 );
 
+INSERT INTO transactions
 -- the annual return rate of the 30day MA
 WITH ma AS (
     SELECT
@@ -146,7 +148,47 @@ FROM
 ON
     ticker = 'FB' AND
     prev_date IN (date_buy_signal, date_sell_signal)
-GROUP BY date_buy_signal, date_sell_signal
--- TODO: debug. 
+WHERE NOT EXISTS (SELECT * FROM transactions)
+GROUP BY date_buy_signal, date_sell_signal;
+
+WITH data AS (
+    SELECT
+        COUNT(1) AS total_transactions,
+        COUNT(1) FILTER (WHERE price_sell > price_buy) AS winning,
+        COUNT(1) FILTER (WHERE price_sell < price_buy) AS losing,
+        COUNT(1) FILTER (WHERE price_sell = price_buy) AS nothing,
+        AVG(price_sell - price_buy) 
+            FILTER (WHERE price_sell > price_buy) AS avg_win,
+        AVG(price_sell - price_buy)
+            FILTER (WHERE price_sell < price_buy) AS avg_lose,
+        -- naive revenue is the revenue if we always buy/sell 1 
+        -- share, i.e., without any sophisticated position management
+        SUM(price_sell - price_buy) AS naive_revenue,
+        AVG(date_sell_signal - date_buy_signal) / 86400 AS avg_hold_days,
+        SUM(date_sell_signal - date_buy_signal) / 86400 AS total_hold_days
+    FROM
+        transactions
+), 
+data2 AS (
+    SELECT
+        COUNT(1) AS num_days
+    FROM
+        price
+    WHERE
+        ticker = 'FB'
+)
+SELECT key, value
+FROM data, data2, LATERAL (
+    VALUES
+        ('total_transactions', data.total_transactions),
+        ('winning', data.winning),
+        ('losing', data.losing),
+        ('nothing', data.nothing),
+        ('avg_win', data.avg_win),
+        ('avg_lose', data.avg_lose),
+        ('naive_revenue', data.naive_revenue),
+        ('avg_hold_days', data.avg_hold_days),
+        ('total_hold_days', data.total_hold_days),
+        ('num_days', data2.num_days)
+) v(key, value)
 -- TODO: compute total revenue, move the python function that compute the annual return rate here
--- TODO: detailed revenue/loss statistics. 
