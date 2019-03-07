@@ -161,6 +161,10 @@ WITH data AS (
             FILTER (WHERE price_sell > price_buy) AS avg_win,
         AVG(price_sell - price_buy)
             FILTER (WHERE price_sell < price_buy) AS avg_lose,
+        AVG(LN(price_sell) - LN(price_buy))
+            FILTER (WHERE price_sell > price_buy) AS avg_win_ln,
+        AVG(LN(price_sell) - LN(price_buy))
+            FILTER (WHERE price_sell < price_buy) AS avg_lose_ln,
         -- naive revenue is the revenue if we always buy/sell 1 
         -- share, i.e., without any sophisticated position management
         SUM(price_sell - price_buy) AS naive_revenue,
@@ -186,6 +190,8 @@ FROM data, data2, LATERAL (
         ('nothing', data.nothing),
         ('avg_win', data.avg_win),
         ('avg_lose', data.avg_lose),
+        ('avg_win_ln', data.avg_win_ln),
+        ('avg_lose_ln', data.avg_lose_ln),
         ('naive_revenue', data.naive_revenue),
         ('avg_hold_days', data.avg_hold_days),
         ('total_hold_days', data.total_hold_days),
