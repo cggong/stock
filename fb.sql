@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS transactions (
 -- We want to evaluate performance of strategies. A strategy takes
 -- in historical data of a stock (prices, MA, volume, etc) and makes
 -- transaction decisions. So we can split the evaluation into three
--- parts: 1) feature generation, 2) transaction generation, 3) 
+-- parts: 1) feature generation, 2) action generation, 3) transaction
+-- summary generation (match buy and sell, and prices) 4) report and
 -- performance evaluation. 
 
 CREATE TABLE IF NOT EXISTS mov_avg (
@@ -71,6 +72,20 @@ CREATE TABLE IF NOT EXISTS mov_avg (
     date INT,
     days INT,
     ma REAL
+);
+
+-- TODO: abstract out (ticker, date) and create data type for 
+-- each separate analysis. Then I can join on analysis_id, and 
+-- I won't be partitioning on many columns. For the current
+-- setup, in the future if I add more functionalities, the 
+-- schema will change as well. If I can use analysis_id to 
+-- represent it, it will be more uniform. 
+CREATE TABLE IF NOT EXISTS ma_action (
+	ticker TEXT,
+	date INT,
+	days INT,
+	multiplier REAL, -- stock price higher than MA * multiplier
+	action TEXT -- 'buy', 'sell', NULL
 );
 
 -- generate moving average given window
@@ -125,6 +140,68 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION gen_ma_action(real[]) RETURNS void AS $$
+BEGIN
+	EXECUTE $func$
+        INSERT INTO ma_action
+		WITH all_features AS (
+			SELECT
+				mov_avg.ticker,
+				mov_avg.date,
+				days,
+				ma,
+				multiplier,
+				close
+			FROM
+				mov_avg
+			CROSS JOIN UNNEST($1) AS t(multiplier)
+			LEFT JOIN price 
+            ON mov_avg.ticker = price.ticker
+            AND mov_avg.date = price.date
+		),
+        -- whether the stock price is above or below MA
+        ma_above AS (
+            SELECT
+                ticker,
+                multiplier,
+                "date",
+                days,
+                CASE WHEN ma > close * multiplier THEN TRUE
+                WHEN ma <= close * multiplier THEN FALSE
+                ELSE NULL -- not enough data to compute MA
+                END AS above
+            FROM all_features
+        )
+        -- signal for whether to buy ot sell stock
+        SELECT
+            ticker,
+            date,
+            days,
+            multiplier,
+            CASE WHEN prev_above = TRUE AND above = FALSE THEN 'sell'
+            WHEN prev_above = FALSE AND above = TRUE THEN 'buy'
+            ELSE NULL
+            END AS action
+        FROM (
+            SELECT
+                ticker,
+                multiplier,
+                "date",
+                days,
+                above,
+                LAG(above) OVER (
+					PARTITION BY ticker, multiplier 
+					ORDER BY date ASC
+				) AS prev_above
+            FROM
+                ma_above
+        ) ma_above_with_prev
+	$func$
+	USING $1;
+END;
+$$ LANGUAGE plpgsql;
+
+DELETE FROM mov_avg;
 SELECT ft_ma(ARRAY [30, 60]);
 DELETE FROM ma_action;
 SELECT gen_ma_action(ARRAY [1., 1.05, 1.10, 1.20]);
