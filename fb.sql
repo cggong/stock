@@ -88,13 +88,10 @@ CREATE TABLE IF NOT EXISTS features (
 CREATE OR REPLACE FUNCTION ft_ma(int[]) RETURNS void AS $$
 DECLARE
     days INT;
+    prev_db_count INT = 0;
 BEGIN
     FOREACH days IN ARRAY $1
     LOOP
-    -- TODO: here I would like to for each window size, 
-    -- update the JSONB field of the table to add the 
-    -- info for MA of that window size. Need to figure
-    -- out how to do it. 
         EXECUTE $func$
             INSERT INTO mov_avg
             SELECT
@@ -109,11 +106,29 @@ BEGIN
             FROM price
         $func$
         USING days;
+
+        ASSERT 
+            (SELECT COUNT(1) FROM mov_avg) 
+            = 
+            prev_db_count 
+            + 
+            (SELECT COUNT(1) FROM price), 
+            FORMAT(
+                'number of entries inserted into mov_avg is incorrect:'
+                'total inserted %L, previous %L, expected %L',
+                (SELECT COUNT(1) FROM mov_avg),
+                prev_db_count,
+                (SELECT COUNT(1) FROM price)
+            );
+        prev_db_count := (SELECT COUNT(1) FROM mov_avg);
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
 
 SELECT ft_ma(ARRAY [30, 60]);
+DELETE FROM ma_action;
+SELECT gen_ma_action(ARRAY [1., 1.05, 1.10, 1.20]);
+--SELECT gen_ma_action(ARRAY [1.]);
 
 
 -- TODO: 1) 2) 3)
@@ -255,3 +270,20 @@ FROM data, data2, LATERAL (
         ('num_days', data2.num_days)
 ) v(key, value)
 -- TODO: compute total revenue, move the python function that compute the annual return rate here
+
+-- 30d MA strategy on FB: 
+--        key         |        value
+----------------------+---------------------
+-- total_transactions |                  79
+-- winning            |                  54
+-- losing             |                  25
+-- nothing            |                   0
+-- avg_win            |    3.34074098092538
+-- avg_lose           |    -3.0380004119873
+-- avg_win_ln         |  0.0349927497182383
+-- avg_lose_ln        | -0.0372814566277602
+-- naive_revenue      |    104.449996948242
+-- avg_hold_days      |    11.2420886075949
+-- total_hold_days    |                 888
+-- num_days           |                1701
+
