@@ -60,6 +60,63 @@ CREATE TABLE IF NOT EXISTS transactions (
     formatted_date_sell_signal TEXT
 );
 
+-- We want to evaluate performance of strategies. A strategy takes
+-- in historical data of a stock (prices, MA, volume, etc) and makes
+-- transaction decisions. So we can split the evaluation into three
+-- parts: 1) feature generation, 2) transaction generation, 3) 
+-- performance evaluation. 
+
+CREATE TABLE IF NOT EXISTS mov_avg (
+    ticker TEXT,
+    date INT,
+    days INT,
+    ma REAL
+);
+
+-- generate moving average given window
+-- TODO at first I wanted to use a JSON to store MA, but later
+-- decided to create a separate table. Need to clean this up. 
+CREATE TABLE IF NOT EXISTS features (
+    ticker TEXT,
+    date INT,
+    -- for dates that are too early so that we don't have an MA, 
+    -- the key won't be here. Otherwise, the JSONB will look like
+    -- {30: 100.3, 60: 33.4}, indicating 30d and 60d MA. 
+    ma JSONB NOT NULL DEFAULT '{}'::JSONB
+);
+
+CREATE OR REPLACE FUNCTION ft_ma(int[]) RETURNS void AS $$
+DECLARE
+    days INT;
+BEGIN
+    FOREACH days IN ARRAY $1
+    LOOP
+    -- TODO: here I would like to for each window size, 
+    -- update the JSONB field of the table to add the 
+    -- info for MA of that window size. Need to figure
+    -- out how to do it. 
+        EXECUTE $func$
+            INSERT INTO mov_avg
+            SELECT
+                ticker,
+                "date",
+                $1,
+                CASE WHEN ROW_NUMBER() OVER (ORDER BY date) >= $1
+                THEN AVG(close) OVER
+                    (ORDER BY date ASC ROWS BETWEEN $1 PRECEDING AND CURRENT ROW)
+                ELSE NULL
+                END AS ma_days
+            FROM price
+        $func$
+        USING days;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT ft_ma(ARRAY [30, 60]);
+
+
+-- TODO: 1) 2) 3)
 INSERT INTO transactions
 -- the annual return rate of the 30day MA
 WITH ma AS (
