@@ -50,6 +50,23 @@ SELECT *
 FROM yf_prices('FB', '2012-01-01', '2020-01-01', 'daily')
 WHERE NOT EXISTS (SELECT ticker FROM price WHERE ticker = 'FB');
 
+-- for now only support MA strategies
+CREATE TABLE IF NOT EXISTS strategies (
+    strategy_id SERIAL PRIMARY KEY,
+    ticker TEXT,
+    days INT,
+    multiplier REAL
+);
+
+INSERT INTO strategies (ticker, days, multiplier)
+SELECT
+    'FB' AS ticker,
+    t1.days AS days,
+    t2.multiplier AS multiplier
+FROM
+    UNNEST(ARRAY [30, 60]) AS t1(days)
+    CROSS JOIN UNNEST(ARRAY [1, 1.05, 1.1, 1.3]) AS t2(multiplier);
+
 CREATE TABLE IF NOT EXISTS transactions (
     ticker TEXT,
     date_buy_signal INT,
@@ -100,43 +117,19 @@ CREATE TABLE IF NOT EXISTS features (
     ma JSONB NOT NULL DEFAULT '{}'::JSONB
 );
 
-CREATE OR REPLACE FUNCTION ft_ma(int[]) RETURNS void AS $$
-DECLARE
-    days INT;
-    prev_db_count INT = 0;
+CREATE OR REPLACE FUNCTION ft_ma(days INT) RETURNS SETOF mov_avg AS $$
 BEGIN
-    FOREACH days IN ARRAY $1
-    LOOP
-        EXECUTE $func$
-            INSERT INTO mov_avg
-            SELECT
-                ticker,
-                "date",
-                $1,
-                CASE WHEN ROW_NUMBER() OVER (ORDER BY date) >= $1
-                THEN AVG(close) OVER
-                    (ORDER BY date ASC ROWS BETWEEN $1 PRECEDING AND CURRENT ROW)
-                ELSE NULL
-                END AS ma_days
-            FROM price
-        $func$
-        USING days;
-
-        ASSERT 
-            (SELECT COUNT(1) FROM mov_avg) 
-            = 
-            prev_db_count 
-            + 
-            (SELECT COUNT(1) FROM price), 
-            FORMAT(
-                'number of entries inserted into mov_avg is incorrect:'
-                'total inserted %L, previous %L, expected %L',
-                (SELECT COUNT(1) FROM mov_avg),
-                prev_db_count,
-                (SELECT COUNT(1) FROM price)
-            );
-        prev_db_count := (SELECT COUNT(1) FROM mov_avg);
-    END LOOP;
+    RETURN QUERY
+    SELECT
+        ticker,
+        "date",
+        days,
+        CAST(CASE WHEN ROW_NUMBER() OVER (ORDER BY date) >= days
+        THEN AVG(close) OVER
+            (ORDER BY date ASC ROWS BETWEEN days PRECEDING AND CURRENT ROW)
+        ELSE NULL
+        END AS REAL) AS ma
+    FROM price;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -202,10 +195,20 @@ END;
 $$ LANGUAGE plpgsql;
 
 DELETE FROM mov_avg;
-SELECT ft_ma(ARRAY [30, 60]);
+INSERT INTO mov_avg
+SELECT
+    ticker,
+    date,
+    t.days,
+    ma
+FROM (
+    SELECT DISTINCT days
+    FROM strategies
+) t(days), ft_ma(days);
+
 DELETE FROM ma_action;
-SELECT gen_ma_action(ARRAY [1., 1.05, 1.10, 1.20]);
---SELECT gen_ma_action(ARRAY [1.]);
+SELECT gen_ma_action(ARRAY_AGG(DISTINCT multiplier))
+FROM strategies;
 
 
 -- TODO: 1) 2) 3)
