@@ -3,7 +3,7 @@ CREATE EXTENSION IF NOT EXISTS plpython3u;
 
 CREATE TABLE IF NOT EXISTS price (
     ticker TEXT,
-    date INT, -- in seconds
+    datum INT, -- in seconds
     high REAL,
     low REAL,
     open REAL,
@@ -38,16 +38,24 @@ my_path = [
 # completely. 
 # sys.path.extend([p for p in my_path if p not in sys.path])
 sys.path = my_path + sys.path
+
+def cvt_dict_key(d, old_key, new_key):
+    d[new_key] = d[old_key]
+    del d[old_key]
+    return d
+
 from yahoofinancials import YahooFinancials
 yf = YahooFinancials(ticker)
 data = yf.get_historical_price_data(start_date, end_date, freq)
 ticker_dict = {'ticker': ticker}
-return [dict(**ticker_dict, **row_dict) for row_dict in data[ticker]['prices']]
+# so that we avoid the SQL reserved word "date"
+return [cvt_dict_key(dict(**ticker_dict, **row_dict), 'date', 'datum') for row_dict in data[ticker]['prices']]
 $$ LANGUAGE plpython3u;
 
 INSERT INTO price
 SELECT *
 FROM yf_prices('FB', '2012-01-01', '2020-01-01', 'daily')
+-- TODO: update the dedup logic
 WHERE NOT EXISTS (SELECT ticker FROM price WHERE ticker = 'FB');
 
 -- for now only support MA strategies
@@ -87,7 +95,7 @@ CREATE TABLE IF NOT EXISTS transactions (
 
 CREATE TABLE IF NOT EXISTS mov_avg (
     ticker TEXT,
-    date INT,
+    datum INT,
     days INT,
     ma REAL
 );
@@ -100,7 +108,7 @@ CREATE TABLE IF NOT EXISTS mov_avg (
 -- represent it, it will be more uniform. 
 CREATE TABLE IF NOT EXISTS ma_action (
 	strategy_id INT REFERENCES strategies ON DELETE CASCADE,
-	date INT,
+	datum INT,
 	action TEXT -- 'buy', 'sell', NULL
 );
 
@@ -109,7 +117,7 @@ CREATE TABLE IF NOT EXISTS ma_action (
 -- decided to create a separate table. Need to clean this up. 
 CREATE TABLE IF NOT EXISTS features (
     ticker TEXT,
-    date INT,
+    datum INT,
     -- for dates that are too early so that we don't have an MA, 
     -- the key won't be here. Otherwise, the JSONB will look like
     -- {30: 100.3, 60: 33.4}, indicating 30d and 60d MA. 
@@ -121,11 +129,11 @@ BEGIN
     RETURN QUERY
     SELECT
         ticker,
-        "date",
+        datum,
         days,
-        CAST(CASE WHEN ROW_NUMBER() OVER (ORDER BY date) >= days
+        CAST(CASE WHEN ROW_NUMBER() OVER (ORDER BY datum) >= days
         THEN AVG(close) OVER
-            (ORDER BY date ASC ROWS BETWEEN days PRECEDING AND CURRENT ROW)
+            (ORDER BY datum ASC ROWS BETWEEN days PRECEDING AND CURRENT ROW)
         ELSE NULL
         END AS REAL) AS ma
     FROM price;
@@ -139,7 +147,7 @@ BEGIN
     WITH ma_above AS (
         SELECT
             strategy_id,
-            price.date,
+            price.datum,
             CASE WHEN ma > close * multiplier THEN TRUE
             WHEN ma <= close * multiplier THEN FALSE
             ELSE NULL -- not enough data to compute MA
@@ -149,7 +157,7 @@ BEGIN
     -- signal for whether to buy ot sell stock
     SELECT
         strategy_id,
-        "date",
+        datum,
         CASE WHEN prev_above = TRUE AND above = FALSE THEN 'sell'
         WHEN prev_above = FALSE AND above = TRUE THEN 'buy'
         ELSE NULL
@@ -157,11 +165,11 @@ BEGIN
     FROM (
         SELECT
             strategy_id,
-            "date",
+            datum,
             above,
             LAG(above) OVER (
 				PARTITION BY strategy_id
-				ORDER BY date ASC
+				ORDER BY datum ASC
 			) AS prev_above
         FROM
             ma_above
@@ -173,7 +181,7 @@ DELETE FROM mov_avg;
 INSERT INTO mov_avg
 SELECT
     ticker,
-    date,
+    datum,
     t.days,
     ma
 FROM (
@@ -192,11 +200,11 @@ INSERT INTO transactions
 -- the annual return rate of the 30day MA
 WITH ma AS (
     SELECT
-        "date",
+        datum,
         close,
-        CASE WHEN ROW_NUMBER() OVER (ORDER BY date) >= 30
+        CASE WHEN ROW_NUMBER() OVER (ORDER BY datum) >= 30
         THEN AVG(close) OVER
-            (ORDER BY date ASC ROWS BETWEEN 29 PRECEDING AND CURRENT ROW)
+            (ORDER BY datum ASC ROWS BETWEEN 29 PRECEDING AND CURRENT ROW)
         ELSE NULL
         END AS ma30
     FROM price
@@ -204,7 +212,7 @@ WITH ma AS (
 -- whether the stock price is above or below MA
 ma_above AS (
     SELECT
-        "date",
+        datum,
         CASE WHEN ma30 > close THEN TRUE
         WHEN ma30 <= close THEN FALSE
         ELSE NULL -- not enough data to compute MA
@@ -215,16 +223,16 @@ ma_above AS (
 -- computation
 ma_above_with_prev AS (
     SELECT
-        "date",
+        datum,
         above,
-        LAG(above) OVER (ORDER BY date ASC) AS prev_above
+        LAG(above) OVER (ORDER BY datum ASC) AS prev_above
     FROM
         ma_above
 ),
 -- signal for whether to buy ot sell stock
 action AS (
     SELECT
-        date,
+        datum,
         CASE WHEN prev_above = TRUE AND above = FALSE THEN 'sell'
         WHEN prev_above = FALSE AND above = TRUE THEN 'buy'
         ELSE NULL
@@ -236,13 +244,13 @@ action AS (
 transaction_pair AS (
     SELECT
         prev_date AS date_buy_signal,
-        date AS date_sell_signal
+        datum AS date_sell_signal
     FROM (
         SELECT
-            date,
+            datum,
             action,
-            LAG(date) OVER (ORDER BY date ASC) AS prev_date,
-            LAG(action) OVER (ORDER BY date ASC) AS prev_action
+            LAG(datum) OVER (ORDER BY datum ASC) AS prev_date,
+            LAG(action) OVER (ORDER BY datum ASC) AS prev_action
         FROM
             action
         WHERE
@@ -266,9 +274,9 @@ FROM
     transaction_pair LEFT JOIN (
         SELECT
             ticker,
-            date,
+            datum,
             close,
-            LAG(date) OVER (ORDER BY date ASC) AS prev_date,
+            LAG(datum) OVER (ORDER BY datum ASC) AS prev_date,
             formatted_date
         FROM
             price
