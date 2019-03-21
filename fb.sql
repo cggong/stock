@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS strategies (
     multiplier REAL
 );
 
+DELETE FROM strategies;
 INSERT INTO strategies (ticker, days, multiplier)
 SELECT
     'FB' AS ticker,
@@ -65,7 +66,7 @@ SELECT
     t2.multiplier AS multiplier
 FROM
     UNNEST(ARRAY [30, 60]) AS t1(days)
-    CROSS JOIN UNNEST(ARRAY [1, 1.05, 1.1, 1.3]) AS t2(multiplier);
+    CROSS JOIN UNNEST(ARRAY [1, 1.05, 1.1, 1.2]) AS t2(multiplier);
 
 CREATE TABLE IF NOT EXISTS transactions (
     ticker TEXT,
@@ -98,10 +99,8 @@ CREATE TABLE IF NOT EXISTS mov_avg (
 -- schema will change as well. If I can use analysis_id to 
 -- represent it, it will be more uniform. 
 CREATE TABLE IF NOT EXISTS ma_action (
-	ticker TEXT,
+	strategy_id INT REFERENCES strategies ON DELETE CASCADE,
 	date INT,
-	days INT,
-	multiplier REAL, -- stock price higher than MA * multiplier
 	action TEXT -- 'buy', 'sell', NULL
 );
 
@@ -133,64 +132,40 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION gen_ma_action(real[]) RETURNS void AS $$
+CREATE OR REPLACE FUNCTION gen_ma_action() RETURNS SETOF ma_action AS $$
 BEGIN
-	EXECUTE $func$
-        INSERT INTO ma_action
-		WITH all_features AS (
-			SELECT
-				mov_avg.ticker,
-				mov_avg.date,
-				days,
-				ma,
-				multiplier,
-				close
-			FROM
-				mov_avg
-			CROSS JOIN UNNEST($1) AS t(multiplier)
-			LEFT JOIN price 
-            ON mov_avg.ticker = price.ticker
-            AND mov_avg.date = price.date
-		),
-        -- whether the stock price is above or below MA
-        ma_above AS (
-            SELECT
-                ticker,
-                multiplier,
-                "date",
-                days,
-                CASE WHEN ma > close * multiplier THEN TRUE
-                WHEN ma <= close * multiplier THEN FALSE
-                ELSE NULL -- not enough data to compute MA
-                END AS above
-            FROM all_features
-        )
-        -- signal for whether to buy ot sell stock
+    RETURN QUERY
+    -- whether the stock price is above or below MA
+    WITH ma_above AS (
         SELECT
-            ticker,
-            date,
-            days,
-            multiplier,
-            CASE WHEN prev_above = TRUE AND above = FALSE THEN 'sell'
-            WHEN prev_above = FALSE AND above = TRUE THEN 'buy'
-            ELSE NULL
-            END AS action
-        FROM (
-            SELECT
-                ticker,
-                multiplier,
-                "date",
-                days,
-                above,
-                LAG(above) OVER (
-					PARTITION BY ticker, multiplier 
-					ORDER BY date ASC
-				) AS prev_above
-            FROM
-                ma_above
-        ) ma_above_with_prev
-	$func$
-	USING $1;
+            strategy_id,
+            price.date,
+            CASE WHEN ma > close * multiplier THEN TRUE
+            WHEN ma <= close * multiplier THEN FALSE
+            ELSE NULL -- not enough data to compute MA
+            END AS above
+        FROM mov_avg NATURAL JOIN strategies NATURAL JOIN price 
+    )
+    -- signal for whether to buy ot sell stock
+    SELECT
+        strategy_id,
+        "date",
+        CASE WHEN prev_above = TRUE AND above = FALSE THEN 'sell'
+        WHEN prev_above = FALSE AND above = TRUE THEN 'buy'
+        ELSE NULL
+        END AS action
+    FROM (
+        SELECT
+            strategy_id,
+            "date",
+            above,
+            LAG(above) OVER (
+				PARTITION BY strategy_id
+				ORDER BY date ASC
+			) AS prev_above
+        FROM
+            ma_above
+    ) ma_above_with_prev;
 END;
 $$ LANGUAGE plpgsql;
 
@@ -207,8 +182,9 @@ FROM (
 ) t(days), ft_ma(days);
 
 DELETE FROM ma_action;
-SELECT gen_ma_action(ARRAY_AGG(DISTINCT multiplier))
-FROM strategies;
+INSERT INTO ma_action
+SELECT *
+FROM gen_ma_action();
 
 
 -- TODO: 1) 2) 3)
