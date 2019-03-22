@@ -58,6 +58,7 @@ FROM yf_prices('FB', '2012-01-01', '2020-01-01', 'daily')
 -- TODO: update the dedup logic
 WHERE NOT EXISTS (SELECT ticker FROM price WHERE ticker = 'FB');
 
+DROP TABLE strategies CASCADE;
 -- for now only support MA strategies
 CREATE TABLE IF NOT EXISTS strategies (
     strategy_id SERIAL PRIMARY KEY,
@@ -77,7 +78,7 @@ FROM
     CROSS JOIN UNNEST(ARRAY [1, 1.05, 1.1, 1.2]) AS t2(multiplier);
 
 CREATE TABLE IF NOT EXISTS transactions (
-    ticker TEXT,
+    strategy_id INT,
     date_buy_signal INT,
     price_buy REAL,
     formatted_date_buy_signal TEXT,
@@ -177,6 +178,58 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION gen_transactions() RETURNS SETOF transactions AS $$
+BEGIN
+    RETURN QUERY
+    -- match buy and sell into one row
+    WITH transaction_pair AS (
+        SELECT
+            strategy_id,
+            prev_date AS date_buy_signal,
+            datum AS date_sell_signal
+        FROM (
+            SELECT
+                strategy_id,
+                datum,
+                action,
+                LAG(datum) OVER (PARTITION BY strategy_id ORDER BY datum ASC) AS prev_date,
+                LAG(action) OVER (PARTITION BY strategy_id ORDER BY datum ASC) AS prev_action
+            FROM
+                ma_action
+            WHERE
+                action IS NOT NULL
+        ) AS action_with_prev
+        WHERE
+            prev_action = 'buy' AND
+            action = 'sell'
+    )
+    SELECT
+        strategy_id,
+        date_buy_signal,
+        MAX(close) FILTER (WHERE prev_date = date_buy_signal) AS price_buy,
+        MAX(formatted_date) FILTER (WHERE prev_date = date_buy_signal)
+            AS formatted_date_buy,
+        date_sell_signal,
+        MAX(close) FILTER (WHERE prev_date = date_sell_signal) AS price_sell,
+        MAX(formatted_date) FILTER (WHERE prev_date = date_sell_signal)
+            AS formatted_date_sell
+    FROM
+        transaction_pair NATURAL JOIN strategies JOIN (
+            SELECT
+                ticker,
+                datum,
+                close,
+                LAG(datum) OVER (ORDER BY datum ASC) AS prev_date,
+                formatted_date
+            FROM price
+        ) AS price_with_prev
+    ON
+        strategies.ticker = price_with_prev.ticker AND
+        prev_date IN (date_buy_signal, date_sell_signal)
+    GROUP BY strategy_id, date_buy_signal, date_sell_signal;
+END;
+$$ LANGUAGE plpgsql;
+
 DELETE FROM mov_avg;
 INSERT INTO mov_avg
 SELECT
@@ -194,145 +247,32 @@ INSERT INTO ma_action
 SELECT *
 FROM gen_ma_action();
 
-
--- TODO: 1) 2) 3)
+DELETE FROM transactions;
 INSERT INTO transactions
--- the annual return rate of the 30day MA
-WITH ma AS (
-    SELECT
-        datum,
-        close,
-        CASE WHEN ROW_NUMBER() OVER (ORDER BY datum) >= 30
-        THEN AVG(close) OVER
-            (ORDER BY datum ASC ROWS BETWEEN 29 PRECEDING AND CURRENT ROW)
-        ELSE NULL
-        END AS ma30
-    FROM price
-), 
--- whether the stock price is above or below MA
-ma_above AS (
-    SELECT
-        datum,
-        CASE WHEN ma30 > close THEN TRUE
-        WHEN ma30 <= close THEN FALSE
-        ELSE NULL -- not enough data to compute MA
-        END AS above
-    FROM ma
-),
--- include ma_above for the previous day for action
--- computation
-ma_above_with_prev AS (
-    SELECT
-        datum,
-        above,
-        LAG(above) OVER (ORDER BY datum ASC) AS prev_above
-    FROM
-        ma_above
-),
--- signal for whether to buy ot sell stock
-action AS (
-    SELECT
-        datum,
-        CASE WHEN prev_above = TRUE AND above = FALSE THEN 'sell'
-        WHEN prev_above = FALSE AND above = TRUE THEN 'buy'
-        ELSE NULL
-        END AS action
-    FROM
-        ma_above_with_prev
-),
--- match buy and sell into one row
-transaction_pair AS (
-    SELECT
-        prev_date AS date_buy_signal,
-        datum AS date_sell_signal
-    FROM (
-        SELECT
-            datum,
-            action,
-            LAG(datum) OVER (ORDER BY datum ASC) AS prev_date,
-            LAG(action) OVER (ORDER BY datum ASC) AS prev_action
-        FROM
-            action
-        WHERE
-            action IS NOT NULL
-    ) AS action_with_prev
-    WHERE
-        prev_action = 'buy' AND
-        action = 'sell'
-)
-SELECT
-    'FB' AS ticker,
-    date_buy_signal,
-    MAX(close) FILTER (WHERE prev_date = date_buy_signal) AS price_buy,
-    MAX(formatted_date) FILTER (WHERE prev_date = date_buy_signal)
-        AS formatted_date_buy,
-    date_sell_signal,
-    MAX(close) FILTER (WHERE prev_date = date_sell_signal) AS price_sell,
-    MAX(formatted_date) FILTER (WHERE prev_date = date_sell_signal)
-        AS formatted_date_sell
-FROM
-    transaction_pair LEFT JOIN (
-        SELECT
-            ticker,
-            datum,
-            close,
-            LAG(datum) OVER (ORDER BY datum ASC) AS prev_date,
-            formatted_date
-        FROM
-            price
-    ) AS price_with_prev
-ON
-    ticker = 'FB' AND
-    prev_date IN (date_buy_signal, date_sell_signal)
-WHERE NOT EXISTS (SELECT * FROM transactions)
-GROUP BY date_buy_signal, date_sell_signal;
+SELECT *
+FROM gen_transactions();
 
-WITH data AS (
-    SELECT
-        COUNT(1) AS total_transactions,
-        COUNT(1) FILTER (WHERE price_sell > price_buy) AS winning,
-        COUNT(1) FILTER (WHERE price_sell < price_buy) AS losing,
-        COUNT(1) FILTER (WHERE price_sell = price_buy) AS nothing,
-        AVG(price_sell - price_buy) 
-            FILTER (WHERE price_sell > price_buy) AS avg_win,
-        AVG(price_sell - price_buy)
-            FILTER (WHERE price_sell < price_buy) AS avg_lose,
-        AVG(LN(price_sell) - LN(price_buy))
-            FILTER (WHERE price_sell > price_buy) AS avg_win_ln,
-        AVG(LN(price_sell) - LN(price_buy))
-            FILTER (WHERE price_sell < price_buy) AS avg_lose_ln,
-        -- naive revenue is the revenue if we always buy/sell 1 
-        -- share, i.e., without any sophisticated position management
-        SUM(price_sell - price_buy) AS naive_revenue,
-        AVG(date_sell_signal - date_buy_signal) / 86400 AS avg_hold_days,
-        SUM(date_sell_signal - date_buy_signal) / 86400 AS total_hold_days
-    FROM
-        transactions
-), 
-data2 AS (
-    SELECT
-        COUNT(1) AS num_days
-    FROM
-        price
-    WHERE
-        ticker = 'FB'
-)
-SELECT key, value
-FROM data, data2, LATERAL (
-    VALUES
-        ('total_transactions', data.total_transactions),
-        ('winning', data.winning),
-        ('losing', data.losing),
-        ('nothing', data.nothing),
-        ('avg_win', data.avg_win),
-        ('avg_lose', data.avg_lose),
-        ('avg_win_ln', data.avg_win_ln),
-        ('avg_lose_ln', data.avg_lose_ln),
-        ('naive_revenue', data.naive_revenue),
-        ('avg_hold_days', data.avg_hold_days),
-        ('total_hold_days', data.total_hold_days),
-        ('num_days', data2.num_days)
-) v(key, value)
+DROP TABLE report;
+CREATE TABLE report AS
+SELECT
+    strategy_id,
+    COUNT(1) AS total_transactions,
+    COUNT(1) FILTER (WHERE price_sell > price_buy) AS winning,
+    COUNT(1) FILTER (WHERE price_sell < price_buy) AS losing,
+    COUNT(1) FILTER (WHERE price_sell = price_buy) AS nothing,
+    AVG(LN(price_sell) - LN(price_buy))
+        FILTER (WHERE price_sell > price_buy) AS avg_win_ln,
+    AVG(LN(price_sell) - LN(price_buy))
+        FILTER (WHERE price_sell < price_buy) AS avg_lose_ln,
+    -- naive revenue is the revenue if we always buy/sell 1 
+    -- share, i.e., without any sophisticated position management
+    SUM(price_sell - price_buy) AS naive_revenue,
+    AVG(date_sell_signal - date_buy_signal) / 86400 AS avg_hold_days,
+    SUM(date_sell_signal - date_buy_signal) / 86400 AS total_hold_days
+FROM transactions
+GROUP BY strategy_id;
+
+
 -- TODO: compute total revenue, move the python function that compute the annual return rate here
 
 -- 30d MA strategy on FB: 
