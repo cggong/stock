@@ -74,8 +74,8 @@ SELECT
     t1.days AS days,
     t2.multiplier AS multiplier
 FROM
-    UNNEST(ARRAY [30, 60]) AS t1(days)
-    CROSS JOIN UNNEST(ARRAY [1, 1.05, 1.1, 1.2]) AS t2(multiplier);
+    UNNEST(ARRAY [30, 60, 100, 200, 400, 800]) AS t1(days)
+    CROSS JOIN UNNEST(ARRAY [1/*, 1.05, 1.1, 1.2*/]) AS t2(multiplier);
 
 CREATE TABLE IF NOT EXISTS transactions (
     strategy_id INT,
