@@ -23,6 +23,8 @@ AS $$
 # No module named 'yahoofinancials'. To obtain this path, in the 
 # python shell, just print out the path. 
 import sys
+# TODO Add error detection logic here to give an error message if 
+# path not found
 my_path = [
     '', 
     '/usr/local/Cellar/python/3.6.5/Frameworks/Python.framework/Versions/3.6/lib/python36.zip', 
