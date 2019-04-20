@@ -293,3 +293,9 @@ GROUP BY strategy_id;
 -- total_hold_days    |                 888
 -- num_days           |                1701
 
+
+CREATE OR REPLACE FUNCTION get_coordinate_lines(width INT, height INT) RETURNS INT AS $$
+BEGIN
+    RETURN width;
+END;
+$$ LANGUAGE plpgsql;

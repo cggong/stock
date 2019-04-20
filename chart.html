@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+</head>
+<body>
+<header>
+Stock Trading
+</header>
+<canvas id="chart"></canvas>
+<script>
+var canvas = document.getElementById("chart");
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+var ctx = canvas.getContext("2d");
+ctx.moveTo(0, 0);
+ctx.lineTo(canvas.width, canvas.height);
+ctx.stroke();
+const callBackend = async () => {
+    const response = await fetch('http://localhost:32155/get_coordinate_lines?width=300&height=150');
+    const myJson = await response.json();
+    console.log(myJson);
+};
+callBackend();
+</script>
+</body>
+</html>
