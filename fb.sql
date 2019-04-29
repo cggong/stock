@@ -4,6 +4,7 @@ CREATE EXTENSION IF NOT EXISTS plpython3u;
 CREATE TABLE IF NOT EXISTS price (
     ticker TEXT,
     datum INT, -- in seconds
+    -- TODO Migrate to DEIMAL
     high REAL,
     low REAL,
     open REAL,
@@ -324,6 +325,53 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT UNIQUE
 );
 
+CREATE TABLE IF NOT EXISTS games (
+    game_id SERIAL PRIMARY KEY,
+    -- Don't know why we need ON DELETE CASCADE; probably clean it up later. 
+    userid INT REFERENCES users ON DELETE CASCADE,
+    created_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- conversion between actual dates and number of days
+CREATE TABLE IF NOT EXISTS game_time (
+    -- for start time, use game_time_id = 0
+    game_time_id INT PRIMARY KEY,
+    game_id INT REFERENCES games ON DELETE CASCADE, 
+    datum INT,
+    formatted_date TEXT
+);
+
+CREATE TABLE IF NOT EXISTS game_transactions (
+    game_transaction_id SERIAL PRIMARY KEY,
+    game_id INT REFERENCES games ON DELETE CASCADE,
+    game_time_id INT REFERENCES game_time ON DELETE CASCADE,
+    num_shares_buy INT
+);
+
+-- to support multiple users playing games concurrently, we allow multiple
+-- active game_ids. 
+CREATE TABLE IF NOT EXISTS game_state (
+    game_id INT REFERENCES games ON DELETE CASCADE,
+    game_time INT,
+    cash REAL
+);
+
+-- When we start the game, we should (randomly) choose stocks and populate
+-- this table with each stock having 0 shares. 
+CREATE TABLE IF NOT EXISTS game_state_portfolio (
+    game_id INT REFERENCES games ON DELETE CASCADE,
+    game_ticker TEXT,
+    num_shares INT
+);
+
+-- Use an obfuscated ticker symbol so that the user doesn't know which stock
+-- it is. For different game_ids, we want different mappings. 
+CREATE TABLE IF NOT EXISTS game_ticker (
+    game_id INT REFERENCES games ON DELETE CASCADE,
+    ticker TEXT,
+    game_ticker TEXT
+);
+
 CREATE OR REPLACE FUNCTION login(username_ TEXT) RETURNS INT AS $$
 DECLARE
     userid_ INT;
@@ -335,5 +383,42 @@ BEGIN
     FROM users
     WHERE username = username_;
     RETURN userid_;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION random_ticker() RETURNS TEXT AS $$
+import random
+import string
+return ''.join(random.choice(string.ascii_uppercase) for i in range(4))
+$$ LANGUAGE plpython3u;
+
+CREATE OR REPLACE FUNCTION game_init(userid_ INT) RETURNS INT AS $$
+DECLARE
+    game_id_ INT;
+BEGIN
+    INSERT INTO games(userid)
+    VALUES (userid_)
+    RETURNING game_id INTO game_id_;
+    -- TODO init game_time
+    INSERT INTO game_state
+    VALUES (game_id_, 0, 10000.);
+    INSERT INTO game_ticker
+    SELECT game_id_ AS game_id, 'FB' AS ticker, random_ticker() AS game_ticker;
+    INSERT INTO game_state_portfolio
+    SELECT game_id, game_ticker, 0 AS num_shares
+    FROM game_ticker
+    WHERE game_id = game_id_;
+    RETURN game_id_;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION game_finish() RETURNS void AS $$
+BEGIN
+END;
+$$ LANGUAGE plpgsql;
+
+-- Want to have a View that contains the net worth at each game time. 
+CREATE OR REPLACE FUNCTION get_stock_lsegs() RETURNS void AS $$
+BEGIN
 END;
 $$ LANGUAGE plpgsql;
