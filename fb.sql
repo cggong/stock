@@ -312,6 +312,9 @@ BEGIN
     RETURN QUERY
     -- If I use %L or %I, then it will be quoted in quotes. 
     SELECT FORMAT('(%s, %s), (%s, %s)', 0, lerp(0, i, 5, 0, height), width, lerp(0, i, 5, 0, height))::lseg
+    FROM generate_series(0, 5) AS s(i)
+    UNiON ALL
+    SELECT FORMAT('(%s, %s), (%s, %s)', lerp(0, i, 5, 0, width), 0, lerp(0, i, 5, 0, width), height)::lseg
     FROM generate_series(0, 5) AS s(i);
 END;
 $$ LANGUAGE plpgsql;
