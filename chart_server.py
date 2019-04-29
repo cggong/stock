@@ -14,17 +14,26 @@ def pg_connect():
     # get a connection, if a connect cannot be made an exception will be raised here
     conn = psycopg2.connect(conn_string)
     # conn.cursor will return a cursor object, you can use this cursor to perform queries
-    cursor = conn.cursor()
+    # cursor = conn.cursor()
     print("Connected!\n")
-    return cursor
+    return conn
 
-def fetchdata(cursor, func, query_obj):
-    records = cursor.execute("SELECT * FROM {}({})".format(func, ','.join(['{} := {}'.format(name, value) for name, value in query_obj])))
-    return cursor.fetchall()
+def fetchdata(conn, func, query_obj):
+    # If we don't rollback, then each time we have a SQL error, we'll need to restart
+    # the python script, because the transaction is being aborted. After we add the with
+    # clause, it every SQL statement will be a transaction, and the first failure will not
+    # affect later statements. 
+    # I thought the with clause would have this benefit (from 
+    # http://www.postgresqltutorial.com/postgresql-python/transaction/), but it doesn't. 
+    # So I'm explicitly rolling back before doing anything. 
+    conn.rollback()
+    with conn.cursor() as cursor:
+        records = cursor.execute("SELECT * FROM {}({})".format(func, ','.join(['{} := {}'.format(name, value) for name, value in query_obj])))
+        return cursor.fetchall()
  
 class ChartServerHandler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, cursor, *args, **kwargs):
-        self.cursor = cursor
+    def __init__(self, conn, *args, **kwargs):
+        self.conn = conn
         super().__init__(*args, **kwargs)
 
     def do_GET(self):
@@ -37,7 +46,7 @@ class ChartServerHandler(http.server.SimpleHTTPRequestHandler):
         query_obj = urllib.parse.parse_qsl(qs.query) 
         # query_obj like [('width', '300'), ('height', '150')]
         func = qs.path[1:]
-        ret = fetchdata(self.cursor, func, query_obj)
+        ret = fetchdata(self.conn, func, query_obj)
         # ret = {'width': 400}
         self.send_response(200)
         self.send_header('Content-type', 'application-json')
