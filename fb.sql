@@ -318,3 +318,22 @@ BEGIN
     FROM generate_series(0, 5) AS s(i);
 END;
 $$ LANGUAGE plpgsql;
+
+CREATE TABLE IF NOT EXISTS users (
+    userid SERIAL PRIMARY KEY,
+    username TEXT UNIQUE
+);
+
+CREATE OR REPLACE FUNCTION login(username_ TEXT) RETURNS INT AS $$
+DECLARE
+    userid_ INT;
+BEGIN
+    INSERT INTO users(username)
+    VALUES (username_)
+    ON CONFLICT (username) DO NOTHING;
+    SELECT userid INTO userid_
+    FROM users
+    WHERE username = username_;
+    RETURN userid_;
+END;
+$$ LANGUAGE plpgsql;
