@@ -294,8 +294,24 @@ GROUP BY strategy_id;
 -- num_days           |                1701
 
 
-CREATE OR REPLACE FUNCTION get_coordinate_lines(width INT, height INT) RETURNS INT AS $$
+-- postgres=# select '(0,0),(6,6)'::lseg;
+--      lseg
+-- ---------------
+--  [(0,0),(6,6)]
+-- (1 row)
+
+CREATE OR REPLACE FUNCTION lerp(x0 INT, x INT, x1 INT, y0 INT, y1 INT) RETURNS INT AS $$
 BEGIN
-    RETURN width;
+    RETURN y0 + (y1 - y0) * (x - x0) / (x1 - x0);
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION get_coordinate_lines(width INT, height INT) RETURNS SETOF lseg AS $$
+BEGIN
+    RETURN QUERY
+    -- If I use %L or %I, then it will be quoted in quotes. 
+    SELECT FORMAT('(%s, %s), (%s, %s)', 0, lerp(0, i, 5, 0, height), width, lerp(0, i, 5, 0, height))::lseg
+    FROM generate_series(0, 5) AS s(i);
 END;
 $$ LANGUAGE plpgsql;
