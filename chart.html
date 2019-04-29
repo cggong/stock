@@ -11,23 +11,30 @@ Stock Trading
 var canvas = document.getElementById("chart");
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
-const callBackend = async () => {
+async function getCoordinateLines() {
     const url = new URL('http://localhost:32155/get_coordinate_lines')
     url.searchParams.set('width', canvas.width);
     url.searchParams.set('height', canvas.height);
     const response = await fetch(url);
     const myJson = await response.json();
-    // myJson like [["[(0,0),(300,0)]"]]
-    console.log(myJson);
+    return myJson;
+};
+
+function plotLsegList(lsegList) {
+    // lsegList like [["[(0,0),(300,0)]"]]
+    const canvas = document.getElementById("chart");
     const ctx = canvas.getContext("2d");
-    for (const row of myJson) {
+    for (const row of lsegList) {
         const lseg = row[0].match(/\d+/g).map(Number);
         ctx.moveTo(lseg[0], lseg[1]);
         ctx.lineTo(lseg[2], lseg[3]);
         ctx.stroke();
     }
-};
-callBackend();
+}
+
+async function main() {
+    plotLsegList(await getCoordinateLines());
+}
+main();
 </script>
-</body>
 </html>
