@@ -332,19 +332,20 @@ CREATE TABLE IF NOT EXISTS games (
     created_time TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- conversion between actual dates and number of days
+-- conversion between actual dates and number of days. This is invariant of
+-- ticker. 
 CREATE TABLE IF NOT EXISTS game_time (
     -- for start time, use game_time_id = 0
-    game_time_id INT PRIMARY KEY,
+    game_time_id SERIAL PRIMARY KEY,
     game_id INT REFERENCES games ON DELETE CASCADE, 
     datum INT,
-    formatted_date TEXT
+    game_time INT
 );
 
 CREATE TABLE IF NOT EXISTS game_transactions (
     game_transaction_id SERIAL PRIMARY KEY,
     game_id INT REFERENCES games ON DELETE CASCADE,
-    game_time_id INT REFERENCES game_time ON DELETE CASCADE,
+    game_time INT,
     num_shares_buy INT
 );
 
@@ -353,7 +354,22 @@ CREATE TABLE IF NOT EXISTS game_transactions (
 CREATE TABLE IF NOT EXISTS game_state (
     game_id INT REFERENCES games ON DELETE CASCADE,
     game_time INT,
-    cash REAL
+    cash REAL,
+    -- start_time INT, // is always 0
+    end_time INT,
+    step INT
+);
+
+-- Store the state of the client view. Each ticker has a different view. 
+CREATE TABLE IF NOT EXISTS game_client_state (
+    game_id INT REFERENCES games ON DELETE CASCADE,
+    game_ticker TEXT,
+    screen_width INT,
+    screen_height INT,
+    min_ln_price REAL,
+    max_ln_price REAL,
+    min_time INT,
+    max_time INT
 );
 
 -- When we start the game, we should (randomly) choose stocks and populate
@@ -395,15 +411,41 @@ $$ LANGUAGE plpython3u;
 CREATE OR REPLACE FUNCTION game_init(userid_ INT) RETURNS INT AS $$
 DECLARE
     game_id_ INT;
+    start_rnk_ INT;
+    end_time_ INT;
 BEGIN
+    -- init metadata: const added complexity. 
     INSERT INTO games(userid)
     VALUES (userid_)
     RETURNING game_id INTO game_id_;
-    -- TODO init game_time
-    INSERT INTO game_state
-    VALUES (game_id_, 0, 10000.);
+
     INSERT INTO game_ticker
     SELECT game_id_ AS game_id, 'FB' AS ticker, random_ticker() AS game_ticker;
+
+    SELECT COUNT(DISTINCT datum) INTO start_rnk_
+    FROM price
+    WHERE datum < 1422887400;
+    INSERT INTO game_time (game_id, datum, game_time)
+    SELECT game_id_, datum, RANK() OVER (ORDER BY datum ASC) - 1 - start_rnk_
+    FROM (
+        SELECT DISTINCT datum AS datum
+        FROM price
+    ) AS distinct_datum;
+
+    -- init configs: const inherent complexity. 
+    SELECT MAX(game_time) INTO end_time_
+    FROM game_time
+    WHERE game_id = game_id_;
+    INSERT INTO game_state
+    -- start_time and end_time are impl-added complexity, but the cash  and step 
+    -- is inherent complexity. 
+    -- Now I'm hardcoding start_time and end_time. 
+    -- TODO randomly choose start_time 
+    -- TODO make step adjustable. 
+    VALUES (game_id_, 0, 10000., end_time_, 7);
+
+    -- init state: variable inherent complexity. 
+    -- These are variables not consts during the game. They record what happens. 
     INSERT INTO game_state_portfolio
     SELECT game_id, game_ticker, 0 AS num_shares
     FROM game_ticker
@@ -422,3 +464,5 @@ CREATE OR REPLACE FUNCTION get_stock_lsegs() RETURNS void AS $$
 BEGIN
 END;
 $$ LANGUAGE plpgsql;
+
+-- TODO set game client state
